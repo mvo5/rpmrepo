@@ -59,7 +59,7 @@ class CliPush:
         for entry in self._ctx.args.to:
             assert len(entry) == 3
             assert entry[0] in ["data", "snapshot"]
-            if entry[0] == "data":
+            if entry[0] == "data" and not self._ctx.args.output:
                 assert entry[1] in ["public", "rhvpn"]
 
     def run(self):
@@ -69,12 +69,38 @@ class CliPush:
 
         with push.Push(self._ctx.cache) as cmd:
             for entry in self._ctx.args.to:
-                if entry[0] == "data":
-                    cmd.push_data_s3(entry[1], entry[2])
-                elif entry[0] == "snapshot":
-                    cmd.push_snapshot_s3(entry[1], entry[2])
+                if self._ctx.args.output:
+                    if entry[0] == "data":
+                        cmd.push_data_dir(
+                            self._ctx.args.output,
+                        )
+                    elif entry[0] == "snapshot":
+                        cmd.push_snapshot_dir(
+                            self._ctx.args.output,
+                            entry[1],
+                            entry[2],
+                        )
+                else:
+                    if entry[0] == "data":
+                        cmd.push_data_s3(entry[1], entry[2])
+                    elif entry[0] == "snapshot":
+                        cmd.push_snapshot_s3(entry[1], entry[2])
 
         return 0
+
+class CliGc:
+    """GC Command"""
+
+    def __init__(self, ctx):
+        self._ctx = ctx
+
+    def run(self):
+        """Run gc command"""
+
+        push.Push.gc_dir(self._ctx.args.output)
+
+        return 0
+
 
 class CliEnumerateCache:
     """EnumerateCache command"""
@@ -182,6 +208,29 @@ class Cli(contextlib.AbstractContextManager):
             nargs=3,
             type=str,
         )
+        cmd_push.add_argument(
+            "--output",
+            help="Path to local output directory",
+            metavar="PATH",
+            type=os.path.abspath,
+        )
+
+        cmd_gc = cmd.add_parser(
+            "gc",
+            add_help=True,
+            allow_abbrev=False,
+            argument_default=None,
+            description="Garbage-collect unreferenced data files",
+            help="Garbage-collect unreferenced data files",
+            prog=f"{self._parser.prog} gc",
+        )
+        cmd_gc.add_argument(
+            "--output",
+            help="Path to local output directory",
+            metavar="PATH",
+            required=True,
+            type=os.path.abspath,
+        )
 
         cmd_push = cmd.add_parser(
             "enumerate-cache",
@@ -239,6 +288,8 @@ class Cli(contextlib.AbstractContextManager):
             ret = CliPull(self).run()
         elif self.args.cmd == "push":
             ret = CliPush(self).run()
+        elif self.args.cmd == "gc":
+            ret = CliGc(self).run()
         elif self.args.cmd == "enumerate-cache":
             ret = CliEnumerateCache(self).run()
         else:

@@ -212,6 +212,55 @@ The backend implementation of RPMrepo involves the following steps:
     configurations that are no longer present in the definition file, and
     generate new ones.
 
+### Local Directory Usage
+
+Instead of pushing snapshots to S3, you can push to a local directory. This
+creates a layout servable directly via nginx/apache, with content-addressed
+data files deduplicated across all platforms via hardlinks.
+
+```
+# Pull, index, and push a Fedora 43 snapshot to a local directory:
+rpmrepo --cache /tmp/rpmrepo --local f43-fedora pull \
+    --platform-id f43 \
+    --base-url "https://dl01.fedoraproject.org/pub/fedora/linux/releases/43/Everything/x86_64/os/"
+
+rpmrepo --cache /tmp/rpmrepo --local f43-fedora index
+
+rpmrepo --cache /tmp/rpmrepo --local f43-fedora push \
+    --output /srv/rpmrepo \
+    --to data public f43 \
+    --to snapshot f43-x86_64-fedora -"$(date +%Y%m%d)"
+```
+
+This produces:
+
+```
+/srv/rpmrepo/
+  data/
+    sha256-a1b2c3...            # real files (hardlinked)
+    sha256-d4e5f6...
+  f42-x86_64-fedora-20260216/
+    repodata/repomd.xml         # hardlink to data/sha256-a1b2c3...
+    Packages/f/foo-1.0.rpm      # hardlink to data/sha256-d4e5f6...
+  thread/f42-x86_64-fedora/
+    f42-x86_64-fedora-20260216  # empty marker
+```
+
+Multiple dated snapshots share deduplicated data under `data/`. To drop old
+snapshots and reclaim space:
+
+```
+# Remove old snapshot directories
+rm -rf /srv/rpmrepo/f41-x86_64-*
+rm -rf /srv/rpmrepo/thread/f41-*
+
+# Garbage-collect unreferenced data files (nlink == 1)
+rpmrepo --cache /tmp/unused gc --output /srv/rpmrepo
+```
+
+Note: cache and output must be on the same filesystem (hardlinks cannot cross
+device boundaries).
+
 ### List Available Snapshots
 
 If you just need a list of the available snapshots you can query the API like
