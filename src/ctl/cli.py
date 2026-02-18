@@ -8,6 +8,8 @@ provides the most basic way to execute and interact with the rpmrepo functions.
 
 import argparse
 import contextlib
+import datetime
+import json
 import os
 import sys
 import uuid
@@ -115,6 +117,60 @@ class CliEnumerateCache:
             cmd.build()
 
         return 0
+
+class CliSnapshot:
+    """Snapshot Command"""
+
+    def __init__(self, ctx):
+        self._ctx = ctx
+
+    def _load_config(self):
+        with open(self._ctx.args.file, "r", encoding="utf-8") as filp:
+            return json.load(filp)
+
+    @staticmethod
+    def _snapshot_suffix(conf):
+        if singleton := conf.get("singleton"):
+            return f"-{singleton}"
+        return f"-{datetime.datetime.now(datetime.timezone.utc).strftime('%Y%m%d')}"
+
+    def run(self):
+        """Run snapshot command"""
+
+        conf = self._load_config()
+        suffix = self._snapshot_suffix(conf)
+
+        platform_id = conf["platform-id"]
+        base_url = conf["base-url"]
+        snapshot_id = conf["snapshot-id"]
+        storage = conf["storage"]
+
+        # If no --local was specified, derive a stable identifier from the
+        # snapshot-id so the dnf cache is reused across runs of the same
+        # repo config.
+        if not self._ctx.args.local:
+            self._ctx.local = snapshot_id
+            self._ctx.cache = os.path.join(self._ctx.args.cache, self._ctx.local)
+            os.makedirs(self._ctx.cache, exist_ok=True)
+            print("LocalIdentifier:", self._ctx.local, file=sys.stdout)
+            print("LocalCache:", self._ctx.cache, file=sys.stdout)
+
+        with pull.Pull(self._ctx.cache, platform_id, base_url) as cmd:
+            cmd.pull()
+
+        with index.Index(self._ctx.cache) as cmd:
+            cmd.index()
+
+        with push.Push(self._ctx.cache) as cmd:
+            if self._ctx.args.output:
+                cmd.push_data_dir(self._ctx.args.output)
+                cmd.push_snapshot_dir(self._ctx.args.output, snapshot_id, suffix)
+            else:
+                cmd.push_data_s3(storage, platform_id)
+                cmd.push_snapshot_s3(snapshot_id, suffix)
+
+        return 0
+
 
 class Cli(contextlib.AbstractContextManager):
     """RPMrepo Command Line Interface"""
@@ -242,6 +298,28 @@ class Cli(contextlib.AbstractContextManager):
             prog=f"{self._parser.prog} enumerate-cache",
         )
 
+        cmd_snapshot = cmd.add_parser(
+            "snapshot",
+            add_help=True,
+            allow_abbrev=False,
+            argument_default=None,
+            description="Run the pull/index/push pipeline for a repo config",
+            help="Run full snapshot from a repo JSON config with sensible defaults",
+            prog=f"{self._parser.prog} snapshot",
+        )
+        cmd_snapshot.add_argument(
+            "--output",
+            help="Path to local output directory (uses hardlinks instead of S3)",
+            metavar="DIR",
+            type=os.path.abspath,
+        )
+        cmd_snapshot.add_argument(
+            "file",
+            help="Path to repo JSON config file",
+            metavar="FILE",
+            type=str,
+        )
+
         return self._parser.parse_args(self._argv[1:])
 
     def _verify_args(self):
@@ -292,6 +370,8 @@ class Cli(contextlib.AbstractContextManager):
             ret = CliGc(self).run()
         elif self.args.cmd == "enumerate-cache":
             ret = CliEnumerateCache(self).run()
+        elif self.args.cmd == "snapshot":
+            ret = CliSnapshot(self).run()
         else:
             raise RuntimeError("Command mismatch")
 

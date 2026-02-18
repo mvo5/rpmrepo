@@ -218,6 +218,15 @@ Instead of pushing snapshots to S3, you can push to a local directory. This
 creates a layout servable directly via nginx/apache, with content-addressed
 data files deduplicated across all platforms via hardlinks.
 
+### Convenience usage
+
+```
+$ rpmrepo --cache /tmp/rpmrepo snapshot --output /srv/rpmrepo f43-fedora pull 
+```
+
+### Manual usage
+
+Here is an example for the manual usage
 ```
 # Pull, index, and push a Fedora 43 snapshot to a local directory:
 rpmrepo --cache /tmp/rpmrepo --local f43-fedora pull \
