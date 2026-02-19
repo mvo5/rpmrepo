@@ -221,7 +221,7 @@ data files deduplicated across all platforms via hardlinks.
 ### Convenience usage
 
 ```
-$ rpmrepo --cache /tmp/rpmrepo snapshot --output /srv/rpmrepo f43-fedora pull 
+$ rpmrepo snapshot --output /srv/rpmrepo f43-fedora pull
 ```
 
 ### Manual usage

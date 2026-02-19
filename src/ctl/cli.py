@@ -197,7 +197,7 @@ class Cli(contextlib.AbstractContextManager):
             "--cache",
             help="Path to cache-directory to use",
             metavar="PATH",
-            required=True,
+            default="/var/lib/rpmrepo/cache",
             type=os.path.abspath,
         )
         self._parser.add_argument(
