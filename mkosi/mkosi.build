@@ -1,0 +1,24 @@
+#!/bin/bash
+set -euo pipefail
+
+# Install Python source
+install -d "${DESTDIR}/usr/lib/rpmrepo/ctl"
+install -m 0644 src/ctl/*.py "${DESTDIR}/usr/lib/rpmrepo/ctl/"
+
+# Install rpmrepo wrapper
+install -d "${DESTDIR}/usr/bin"
+printf '#!/bin/bash\nPYTHONPATH=/usr/lib/rpmrepo exec python3 -m ctl "$@"\n' \
+    > "${DESTDIR}/usr/bin/rpmrepo"
+chmod 0755 "${DESTDIR}/usr/bin/rpmrepo"
+
+# Install systemd units
+install -d "${DESTDIR}/usr/lib/systemd/system"
+install -m 0644 data/rpmrepo-snapshot.service "${DESTDIR}/usr/lib/systemd/system/"
+install -m 0644 data/rpmrepo-snapshot.timer "${DESTDIR}/usr/lib/systemd/system/"
+
+# Install available repo JSON configs
+install -d "${DESTDIR}/usr/share/rpmrepo/repo"
+install -m 0644 repo/*.json "${DESTDIR}/usr/share/rpmrepo/repo/"
+
+# Create empty active repo directory (symlink desired configs from above)
+install -d "${DESTDIR}/etc/rpmrepo/repo"
