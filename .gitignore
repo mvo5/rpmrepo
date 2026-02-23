@@ -1,1 +1,4 @@
 __pycache__/
+mkosi/mkosi.output/
+mkosi/mkosi.builddir/
+mkosi/mkosi.cache/

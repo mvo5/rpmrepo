@@ -3,5 +3,5 @@ Description=RPMRepo Daily Snapshot
 
 [Service]
 Type=oneshot
-Environment=RPMREPO_REPO_DIR=/usr/share/rpmrepo/repo
+Environment=RPMREPO_REPO_DIR=/etc/rpmrepo/repo
 ExecStart=bash -c 'for f in "${RPMREPO_REPO_DIR}"/*.json; do [ -e "$f" ] && rpmrepo snapshot "$f"; done'

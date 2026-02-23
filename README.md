@@ -270,6 +270,51 @@ rpmrepo --cache /tmp/unused gc --output /srv/rpmrepo
 Note: cache and output must be on the same filesystem (hardlinks cannot cross
 device boundaries).
 
+### Portable Service
+
+The `mkosi/` directory contains a [mkosi](https://github.com/systemd/mkosi)
+configuration that builds a systemd portable service image. This packages the
+snapshot tooling, systemd units, and repo configs into a single disk image
+that can be deployed on any systemd host.
+
+```
+# Build the image
+mkosi -C mkosi
+```
+
+The image ships all available repo configs under `/usr/share/rpmrepo/repo/`.
+No repos are enabled by default. To enable repos, symlink the desired configs
+into `/etc/rpmrepo/repo/`:
+
+```
+# Attach the portable service
+sudo portablectl attach mkosi/mkosi.output/rpmrepo-snapshot_*.raw
+
+# Enable the repos you want to snapshot
+sudo ln -s /usr/share/rpmrepo/repo/cs10-x86_64-baseos.json /etc/rpmrepo/repo/
+sudo ln -s /usr/share/rpmrepo/repo/cs10-x86_64-appstream.json /etc/rpmrepo/repo/
+
+# Start the timer
+sudo systemctl enable --now rpmrepo-snapshot.timer
+```
+
+To change the snapshot schedule, override the timer:
+
+```
+sudo systemctl edit rpmrepo-snapshot.timer
+```
+
+```
+[Timer]
+OnCalendar=
+OnCalendar=weekly
+```
+
+The service iterates over all `*.json` files in `RPMREPO_REPO_DIR`
+(default: `/usr/share/rpmrepo/repo`) and runs `rpmrepo snapshot` for each.
+See `data/rpmrepo-snapshot.timer` and `data/rpmrepo-snapshot.service` for
+details.
+
 ### List Available Snapshots
 
 If you just need a list of the available snapshots you can query the API like
