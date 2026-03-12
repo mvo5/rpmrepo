@@ -12,7 +12,7 @@ import os
 import sys
 import uuid
 
-from . import index, pull, push, enumerate_cache, snapshot
+from . import gc, index, pull, push, enumerate_cache, snapshot
 
 
 class CliIndex:
@@ -108,6 +108,41 @@ class CliSnapshot:
         for path in self._ctx.args.files:
             cmd.run_one(path)
 
+        return 0
+
+
+class CliGc:
+    """GC Command — delete a snapshot and clean up orphaned data"""
+
+    def __init__(self, ctx):
+        self._ctx = ctx
+
+    def run(self):
+        """Run gc command"""
+
+        gc.delete_snapshot(
+            self._ctx.args.snapshot,
+            self._ctx.args.storage,
+            self._ctx.args.platform_id,
+            dry_run=self._ctx.args.dry_run,
+        )
+        return 0
+
+
+class CliBuildManifest:
+    """Build Manifest Command — build manifest from local cache"""
+
+    def __init__(self, ctx):
+        self._ctx = ctx
+
+    def run(self):
+        """Run build-manifest command"""
+
+        gc.build_manifest_local(
+            self._ctx.args.cache,
+            self._ctx.args.snapshot,
+            dry_run=self._ctx.args.dry_run,
+        )
         return 0
 
 
@@ -231,6 +266,57 @@ class Cli(contextlib.AbstractContextManager):
             type=str,
         )
 
+        cmd_gc = cmd.add_parser(
+            "gc",
+            add_help=True,
+            allow_abbrev=False,
+            argument_default=None,
+            description="Delete a snapshot and garbage-collect orphaned data",
+            help="Delete a snapshot and its orphaned data blobs",
+            prog=f"{self._parser.prog} gc",
+        )
+        cmd_gc.add_argument(
+            "snapshot",
+            help="Full snapshot ID (e.g. f44-x86_64-branched-20260310)",
+            type=str,
+        )
+        cmd_gc.add_argument(
+            "--storage",
+            help="Storage tier (default: public)",
+            default="public",
+            type=str,
+        )
+        cmd_gc.add_argument(
+            "--platform-id",
+            help="Platform ID (e.g. f44). Derived from snapshot ID if omitted.",
+            type=str,
+        )
+        cmd_gc.add_argument(
+            "--dry-run",
+            help="Only show what would be deleted",
+            action="store_true",
+        )
+
+        cmd_build_manifest = cmd.add_parser(
+            "build-manifest",
+            add_help=True,
+            allow_abbrev=False,
+            argument_default=None,
+            description="Build a manifest from local index cache and upload to S3",
+            help="Build manifest from local cache (fast bootstrap)",
+            prog=f"{self._parser.prog} build-manifest",
+        )
+        cmd_build_manifest.add_argument(
+            "snapshot",
+            help="Full snapshot ID (e.g. f44-x86_64-branched-20260310)",
+            type=str,
+        )
+        cmd_build_manifest.add_argument(
+            "--dry-run",
+            help="Only scan, do not upload",
+            action="store_true",
+        )
+
         return self._parser.parse_args(self._argv[1:])
 
     def _verify_args(self):
@@ -285,6 +371,14 @@ class Cli(contextlib.AbstractContextManager):
             ret = CliEnumerateCache(self).run()
         elif self.args.cmd == "snapshot":
             ret = CliSnapshot(self).run()
+        elif self.args.cmd == "gc":
+            # Derive platform-id from snapshot if not given
+            # e.g. "f44" from "f44-x86_64-branched-20260310"
+            if not self.args.platform_id:
+                self.args.platform_id = self.args.snapshot.split("-")[0]
+            ret = CliGc(self).run()
+        elif self.args.cmd == "build-manifest":
+            ret = CliBuildManifest(self).run()
         else:
             raise RuntimeError("Command mismatch")
 

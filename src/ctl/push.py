@@ -83,6 +83,7 @@ class Push(contextlib.AbstractContextManager):
             for entry in entries:
                 n_total += 1
 
+        checksums = set()
         i_total = 0
         for level, _subdirs, entries in os.walk(self._path_snapshot):
             levelpath = os.path.relpath(level, self._path_snapshot)
@@ -97,6 +98,8 @@ class Push(contextlib.AbstractContextManager):
                 with open(os.path.join(level, entry), "rb") as filp:
                     checksum = filp.read().decode()
 
+                checksums.add(checksum)
+
                 print(f"[{i_total}/{n_total}] '{path}/{entry}' -> {checksum}")
 
                 s3c.put_object(
@@ -105,6 +108,17 @@ class Push(contextlib.AbstractContextManager):
                     Key=f"data/ref/{path}/{entry}",
                     Metadata={"rpmrepo-checksum": checksum},
                 )
+
+        # Write manifest: one checksum per line.
+        snapshot_full_id = f"{snapshot_id}{snapshot_suffix}"
+        manifest_key = f"data/manifest/{snapshot_full_id}"
+        print(f"Writing manifest {manifest_key} "
+              f"({len(checksums)} unique checksums)")
+        s3c.put_object(
+            Bucket="rpmrepo-storage",
+            Key=manifest_key,
+            Body="\n".join(sorted(checksums)),
+        )
 
         s3c.put_object(
             Body=b"",

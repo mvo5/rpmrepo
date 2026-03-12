@@ -77,9 +77,16 @@ class Snapshot:
         with index.Index(cache) as cmd:
             cmd.index()
 
-        print(f"Pushing {snapshot_id}{suffix}...")
+        snapshot_full_id = f"{snapshot_id}{suffix}"
+
+        print(f"Pushing {snapshot_full_id}...")
         with push.Push(cache) as cmd:
             cmd.push_data_s3(storage, platform_id)
             cmd.push_snapshot_s3(snapshot_id, suffix)
 
-        print(f"Snapshot {snapshot_id}{suffix} complete.")
+        # Record which snapshot this cache belongs to, so that
+        # build-manifest can verify it is reading the right data.
+        with open(os.path.join(cache, "conf", "snapshot-id"), "w") as filp:
+            filp.write(snapshot_full_id)
+
+        print(f"Snapshot {snapshot_full_id} complete.")
