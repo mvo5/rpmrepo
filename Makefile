@@ -86,6 +86,8 @@ help:
 	@echo "targets are available:"
 	@echo
 	@echo "    help:               Print this usage information."
+	@echo "    install:            Install rpmrepo on the system."
+	@echo "    uninstall:          Uninstall rpmrepo from the system."
 	@echo "    snapshot-configs:   Regenerate all snapshot configs from definitions."
 	@echo "    test:               Run unit-tests."
 
@@ -125,6 +127,46 @@ gateway-zip: $(BUILDDIR)/gateway/rpmrepo-gateway-main.zip
 snapshot-configs:
 	rm -f $(SRCDIR)/repo/*.json
 	./gen-all-repos.py --definitions $(SRCDIR)/repo-definitions.yaml --output $(SRCDIR)/repo/
+
+#
+# Install / Uninstall
+#
+# Install rpmrepo on the system. This installs the Python source, the
+# wrapper script, repo configs, and systemd units.
+#
+#     PREFIX
+#         Installation prefix, defaults to /usr.
+#
+#     DESTDIR
+#         Staging directory for packaging, prepended to all paths.
+#
+
+PREFIX		?= /usr
+SYSCONFDIR	?= /etc
+
+.PHONY: install
+install:
+	install -d $(DESTDIR)$(PREFIX)/lib/rpmrepo/ctl
+	install -m 0644 $(SRCDIR)/src/ctl/*.py $(DESTDIR)$(PREFIX)/lib/rpmrepo/ctl/
+	install -d $(DESTDIR)$(PREFIX)/bin
+	printf '#!/bin/bash\nPYTHONPATH=$(PREFIX)/lib/rpmrepo exec python3 -m ctl "$$@"\n' \
+		> $(DESTDIR)$(PREFIX)/bin/rpmrepo
+	chmod 0755 $(DESTDIR)$(PREFIX)/bin/rpmrepo
+	install -d $(DESTDIR)$(PREFIX)/share/rpmrepo/repo
+	install -m 0644 $(SRCDIR)/repo/*.json $(DESTDIR)$(PREFIX)/share/rpmrepo/repo/
+	install -d $(DESTDIR)$(SYSCONFDIR)/rpmrepo/repo
+	install -d $(DESTDIR)$(PREFIX)/lib/systemd/system
+	install -m 0644 $(SRCDIR)/data/rpmrepo-snapshot.service $(DESTDIR)$(PREFIX)/lib/systemd/system/
+	install -m 0644 $(SRCDIR)/data/rpmrepo-snapshot.timer $(DESTDIR)$(PREFIX)/lib/systemd/system/
+
+.PHONY: uninstall
+uninstall:
+	rm -f $(DESTDIR)$(PREFIX)/bin/rpmrepo
+	rm -rf $(DESTDIR)$(PREFIX)/lib/rpmrepo
+	rm -rf $(DESTDIR)$(PREFIX)/share/rpmrepo
+	rm -f $(DESTDIR)$(PREFIX)/lib/systemd/system/rpmrepo-snapshot.service
+	rm -f $(DESTDIR)$(PREFIX)/lib/systemd/system/rpmrepo-snapshot.timer
+	rm -rf $(DESTDIR)$(SYSCONFDIR)/rpmrepo
 
 .PHONY: test
 test:
