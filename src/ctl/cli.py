@@ -24,6 +24,8 @@ class CliIndex:
     def run(self):
         """Run index command"""
 
+        self._ctx._create_local_cache()
+
         with index.Index(self._ctx.cache) as cmd:
             cmd.index()
 
@@ -38,6 +40,8 @@ class CliPull:
 
     def run(self):
         """Run pull command"""
+
+        self._ctx._create_local_cache()
 
         with pull.Pull(
                 self._ctx.cache,
@@ -65,6 +69,7 @@ class CliPush:
     def run(self):
         """Run push command"""
 
+        self._ctx._create_local_cache()
         self._parse_args()
 
         with push.Push(self._ctx.cache) as cmd:
@@ -234,27 +239,31 @@ class Cli(contextlib.AbstractContextManager):
             self._parser.print_help(file=sys.stderr)
             sys.exit(Cli.EXITCODE_INVALID_COMMAND)
 
+    def _create_local_cache(self):
+        """Create a UUID-based local cache directory.
+
+        Used by low-level commands (index, pull, push) that operate
+        on a single working directory.  Higher-level commands like
+        snapshot manage their own cache layout.
+        """
+
+        self.local = self.args.local
+        if not self.local:
+            self.local = uuid.uuid4().hex
+
+        print("LocalIdentifier:", self.local, file=sys.stdout)
+
+        self.cache = os.path.join(self.args.cache, self.local)
+        os.makedirs(self.cache, exist_ok=True)
+
+        print("LocalCache:", self.cache, file=sys.stdout)
+
     def __enter__(self):
         self._exitstack = contextlib.ExitStack()
         with self._exitstack:
-            # Parse command-line arguments.
             self.args = self._parse_args()
             self._verify_args()
 
-            # Create local identifier, if not specified.
-            self.local = self.args.local
-            if not self.local:
-                self.local = uuid.uuid4().hex
-
-            print("LocalIdentifier:", self.local, file=sys.stdout)
-
-            # Create local cache directory, if non-existant.
-            self.cache = os.path.join(self.args.cache, self.local)
-            os.makedirs(self.cache, exist_ok=True)
-
-            print("LocalCache:", self.cache, file=sys.stdout)
-
-            # Setup succeeded, make sure to retain the exitstack for __exit__.
             self._exitstack = self._exitstack.pop_all()
 
         return self
