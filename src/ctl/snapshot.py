@@ -9,11 +9,41 @@ indexes it, and pushes it to remote storage.
 import datetime
 import json
 import os
+import re
 
 import boto3
 import botocore.exceptions
 
 from . import index, pull, push
+
+
+# Maps the tag portion of a Fedora snapshot-id (e.g. "branched", "rawhide",
+# "fedora") to the release identifier that appears in the koji compose URL
+# layout. "branched" and "fedora" both correspond to the numbered release;
+# "rawhide" is symbolic. Other tags (e.g. "updates-released") have no
+# direct equivalent in the compose URL surface and are skipped.
+_FEDORA_TAG_RELEASE = {
+    "rawhide": "rawhide",
+    "branched": "_NUMERIC_",
+    "fedora": "_NUMERIC_",
+}
+
+
+def _fedora_release(platform_id, snapshot_id):
+    """Derive (release, arch, tag) from a Fedora snapshot config, or None."""
+
+    m = re.match(r"^f(\d+)$", platform_id)
+    if not m:
+        return None
+    rest = snapshot_id.removeprefix(f"{platform_id}-")
+    if rest == snapshot_id or "-" not in rest:
+        return None
+    arch, tag = rest.split("-", 1)
+    target = _FEDORA_TAG_RELEASE.get(tag)
+    if target is None:
+        return None
+    release = m.group(1) if target == "_NUMERIC_" else target
+    return release, arch, tag
 
 
 class Snapshot:
@@ -89,4 +119,34 @@ class Snapshot:
         with open(os.path.join(cache, "conf", "snapshot-id"), "w") as filp:
             filp.write(snapshot_full_id)
 
+        # Recognised Fedora snapshots publish a release pointer the cloudflare
+        # worker reads to serve the koji-compose URL surface (used by mkosi's
+        # Snapshot= setting). Derived from platform-id + snapshot-id, so no
+        # extra config in the per-repo JSON is needed.
+        if derived := _fedora_release(platform_id, snapshot_id):
+            release, arch, tag = derived
+            self._publish_release_pointer(
+                release, platform_id, arch, tag, suffix,
+            )
+
         print(f"Snapshot {snapshot_full_id} complete.")
+
+    @staticmethod
+    def _publish_release_pointer(release, platform_id, arch, tag, suffix):
+        """Write data/latest/fedora-<release>.json describing the latest snapshot."""
+
+        date = suffix.lstrip("-")
+        body = json.dumps({
+            "platform": platform_id,
+            "tag": tag,
+            "arch": arch,
+            "date": date,
+        })
+        key = f"data/latest/fedora-{release}.json"
+        print(f"Publishing release pointer {key} -> {body}")
+        boto3.client("s3").put_object(
+            Bucket="rpmrepo-storage",
+            Key=key,
+            Body=body.encode(),
+            ContentType="application/json",
+        )

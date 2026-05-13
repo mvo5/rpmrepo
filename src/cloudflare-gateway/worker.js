@@ -13,8 +13,16 @@
  * URL scheme:
  *   /v2/mirror/<storage>/<platform>/<snapshot>/<path...>
  *   /v2/enumerate[/<thread>]
+ *   /compose/<release>/Fedora-<Release>-<snapshot>/compose/Everything/<arch>/os/<path...>
+ *   /compose/<release>/latest-Fedora-<Release>/COMPOSE_ID
  *   /robots.txt
  *   /                -> redirect to documentation
+ *
+ * The /compose/... surface mimics the kojipkgs.fedoraproject.org layout so
+ * that mkosi's Fedora Snapshot= setting works against this worker. <release>
+ * is mapped to (platform, tag) by reading a pointer file written by the
+ * snapshot job (see loadReleasePointer), and translated internally into the
+ * existing data/ref/<snapshot-id>/<path> R2 layout.
  */
 
 const DOCUMENTATION_URL = "https://osbuild.org/docs/developer-guide/projects/rpmrepo/";
@@ -24,6 +32,28 @@ const STORAGE_URLS = {
 };
 
 const ROBOTS_TXT = "User-agent: *\nDisallow: /\n";
+
+// Pointer file produced by the snapshot job for each Fedora release.
+// Body is JSON: {"platform": "f44", "tag": "branched", "date": "20260512"}.
+// Worker reads it to translate a koji compose URL into our snapshot id and
+// to serve the COMPOSE_ID endpoint. Keeping this out of the worker source
+// means new releases (e.g. f45 becoming rawhide, fNN graduating from
+// branched to fedora) just require a pointer write, not a worker redeploy.
+function releasePointerKey(release) {
+	return `data/latest/fedora-${release}.json`;
+}
+
+async function loadReleasePointer(bucket, release) {
+	const obj = await bucket.get(releasePointerKey(release));
+	if (!obj) return null;
+	try {
+		const data = JSON.parse(await obj.text());
+		if (!data.platform || !data.tag || !data.date) return null;
+		return data;
+	} catch (_) {
+		return null;
+	}
+}
 
 function errorResponse(code) {
 	return new Response(null, { status: code });
@@ -93,7 +123,49 @@ function parseRequest(pathname) {
 		};
 	}
 
+	// koji-compose compatible surface used by mkosi's Snapshot= setting:
+	//
+	//   /compose/<release>/Fedora-<Release>-<snapshot>/compose/Everything/<arch>/os/<path...>
+	//   /compose/<release>/latest-Fedora-<Release>/COMPOSE_ID
+	if (elements[0] === "compose") {
+		return parseComposeRequest(elements);
+	}
+
 	return null;
+}
+
+function parseComposeRequest(elements) {
+	// elements[0] is "compose"
+	if (elements.length < 3) return null;
+	const release = elements[1];
+
+	// latest-Fedora-<Release>/COMPOSE_ID
+	if (elements.length === 4 &&
+	    elements[2] === `latest-Fedora-${capitalize(release)}` &&
+	    elements[3] === "COMPOSE_ID") {
+		return { composeLatest: { release } };
+	}
+
+	// Fedora-<Release>-<snapshot>/compose/Everything/<arch>/os/<path...>
+	if (elements.length < 8) return null;
+	const dirName = elements[2];
+	const prefix = `Fedora-${capitalize(release)}-`;
+	if (!dirName.startsWith(prefix)) return null;
+	const snapshot = dirName.slice(prefix.length);
+	if (!snapshot) return null;
+	if (elements[3] !== "compose") return null;
+	if (elements[4] !== "Everything") return null;
+	const arch = elements[5];
+	if (elements[6] !== "os") return null;
+	const path = elements.slice(7).join("/");
+	if (!path) return null;
+
+	return { compose: { release, snapshot, arch, path } };
+}
+
+function capitalize(s) {
+	if (!s) return s;
+	return s[0].toUpperCase() + s.slice(1);
 }
 
 /**
@@ -113,6 +185,38 @@ async function handleMirror(bucket, { storage, platform, snapshot, path }) {
 
 	const destination = `${storageUrl}/${platform}/${checksum}`;
 	return redirectResponse(destination);
+}
+
+/**
+ * Handle a koji-compose-style mirror request.
+ *
+ * Translates the kojipkgs URL layout into our internal snapshot id and
+ * defers to handleMirror() for the actual R2 lookup and redirect.
+ */
+async function handleCompose(bucket, { release, snapshot, arch, path }) {
+	const ptr = await loadReleasePointer(bucket, release);
+	if (!ptr) return errorResponse(404);
+
+	return handleMirror(bucket, {
+		storage: "public",
+		platform: ptr.platform,
+		snapshot: `${ptr.platform}-${arch}-${ptr.tag}-${snapshot}`,
+		path,
+	});
+}
+
+/**
+ * Serve the COMPOSE_ID pointer for a release. Returns "Fedora-<Release>-<date>"
+ * matching what kojipkgs.fedoraproject.org serves.
+ */
+async function handleComposeLatest(bucket, { release }) {
+	const ptr = await loadReleasePointer(bucket, release);
+	if (!ptr) return errorResponse(404);
+
+	return new Response(`Fedora-${capitalize(release)}-${ptr.date}\n`, {
+		status: 200,
+		headers: { "Content-Type": "text/plain" },
+	});
 }
 
 /**
@@ -178,6 +282,8 @@ export default {
 
 		if (cmd.mirror) return handleMirror(env.BUCKET, cmd.mirror);
 		if (cmd.enumerate) return handleEnumerate(env.BUCKET, cmd.enumerate);
+		if (cmd.compose) return handleCompose(env.BUCKET, cmd.compose);
+		if (cmd.composeLatest) return handleComposeLatest(env.BUCKET, cmd.composeLatest);
 
 		return errorResponse(400);
 	},
