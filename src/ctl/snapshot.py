@@ -78,7 +78,11 @@ class Snapshot:
             raise
 
     def run_one(self, path):
-        """Run snapshot for a single repo config file"""
+        """Run snapshot for a single repo config file.
+
+        Returns a dict with the snapshot's resolved (platform_id, storage,
+        snapshot_full_id) so callers can chain follow-up steps (e.g. compose).
+        """
 
         conf = self._load_config(path)
         suffix = self._snapshot_suffix(conf)
@@ -87,10 +91,15 @@ class Snapshot:
         base_url = conf["base-url"]
         snapshot_id = conf["snapshot-id"]
         storage = conf["storage"]
+        snapshot_full_id = f"{snapshot_id}{suffix}"
 
         if self._snapshot_exists(snapshot_id, suffix):
-            print(f"Snapshot {snapshot_id}{suffix} exists already, skipping")
-            return
+            print(f"Snapshot {snapshot_full_id} exists already, skipping")
+            return {
+                "platform_id": platform_id,
+                "storage": storage,
+                "snapshot_full_id": snapshot_full_id,
+            }
 
         # Derive a stable cache identifier from the snapshot-id so the
         # dnf cache is reused across runs of the same repo config.
@@ -106,8 +115,6 @@ class Snapshot:
         print(f"Indexing {snapshot_id}...")
         with index.Index(cache) as cmd:
             cmd.index()
-
-        snapshot_full_id = f"{snapshot_id}{suffix}"
 
         print(f"Pushing {snapshot_full_id}...")
         with push.Push(cache) as cmd:
@@ -130,6 +137,11 @@ class Snapshot:
             )
 
         print(f"Snapshot {snapshot_full_id} complete.")
+        return {
+            "platform_id": platform_id,
+            "storage": storage,
+            "snapshot_full_id": snapshot_full_id,
+        }
 
     @staticmethod
     def _publish_release_pointer(release, platform_id, arch, tag, suffix):

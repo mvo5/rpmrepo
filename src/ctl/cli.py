@@ -9,10 +9,11 @@ provides the most basic way to execute and interact with the rpmrepo functions.
 import argparse
 import contextlib
 import os
+import re
 import sys
 import uuid
 
-from . import gc, index, pull, push, enumerate_cache, snapshot
+from . import compose, gc, index, pull, push, enumerate_cache, snapshot
 
 
 class CliIndex:
@@ -104,9 +105,95 @@ class CliSnapshot:
     def run(self):
         """Run snapshot command"""
 
+        if self._ctx.args.compose and len(self._ctx.args.files) != 1:
+            print("--compose requires exactly one repo file", file=sys.stderr)
+            return 1
+
         cmd = snapshot.Snapshot(self._ctx.args.cache)
+        result = None
         for path in self._ctx.args.files:
-            cmd.run_one(path)
+            result = cmd.run_one(path)
+
+        if self._ctx.args.compose and result:
+            self._run_compose(result)
+
+        return 0
+
+    def _run_compose(self, snap):
+        """Compose the freshly-made snapshot with the bases from --compose."""
+
+        # Derive output id from the fresh snapshot's arch + date.
+        full = snap["snapshot_full_id"]
+        m = re.match(r"^(f\d+)-([^-]+)-[^-]+(?:-[^-]+)*-(\d{8})$", full)
+        if not m:
+            print(
+                f"Cannot derive compose output id from {full}; pass an "
+                "explicit ctl compose invocation instead",
+                file=sys.stderr,
+            )
+            return
+        platform_id, arch, date = m.groups()
+        output = f"{platform_id}-{arch}-{self._ctx.args.compose_tag}-{date}"
+
+        inputs = list(self._ctx.args.compose) + [full]
+        print(f"Composing {output} from {', '.join(inputs)}...")
+
+        # Fresh local subdir so the compose doesn't collide with the cache
+        # used by the snapshot step.
+        compose_cache = os.path.join(self._ctx.args.cache, f"compose-{output}")
+        os.makedirs(compose_cache, exist_ok=True)
+
+        with compose.Compose(
+                compose_cache, snap["platform_id"], snap["storage"], inputs,
+        ) as cmd:
+            cmd.compose()
+
+        with push.Push(compose_cache) as cmd:
+            cmd.push_data_s3(snap["storage"], snap["platform_id"])
+            cmd.push_snapshot_s3(output, "")
+
+        # Re-publish the release pointer to point at the compose, not the
+        # raw updates snapshot. compose tag wins because that's what mkosi
+        # Snapshot= should consume going forward.
+        release = platform_id.removeprefix("f")
+        snapshot.Snapshot._publish_release_pointer(
+            release, snap["platform_id"], arch, self._ctx.args.compose_tag,
+            f"-{date}",
+        )
+
+
+class CliCompose:
+    """Compose Command — merge multiple snapshots into one with fresh repodata."""
+
+    def __init__(self, ctx):
+        self._ctx = ctx
+
+    def run(self):
+        """Run compose command"""
+
+        self._ctx._create_local_cache()
+
+        with compose.Compose(
+                self._ctx.cache,
+                self._ctx.args.platform_id,
+                self._ctx.args.storage,
+                self._ctx.args.inputs,
+        ) as cmd:
+            cmd.compose()
+
+        with push.Push(self._ctx.cache) as cmd:
+            cmd.push_data_s3(self._ctx.args.storage, self._ctx.args.platform_id)
+            cmd.push_snapshot_s3(self._ctx.args.output, "")
+
+        # Publish the release pointer so mkosi `latest-snapshot` sees this
+        # compose. Output id is parsed as f<release>-<arch>-<tag>-<date>.
+        # Format constraints match what snapshot._fedora_release expects.
+        m = re.match(r"^f(\d+)-([^-]+)-([^-]+)-(\d{8})$", self._ctx.args.output)
+        if m:
+            release, arch, tag, date = m.groups()
+            snapshot.Snapshot._publish_release_pointer(
+                release, self._ctx.args.platform_id, arch, tag, f"-{date}",
+            )
 
         return 0
 
@@ -265,6 +352,56 @@ class Cli(contextlib.AbstractContextManager):
             nargs="+",
             type=str,
         )
+        cmd_snapshot.add_argument(
+            "--compose",
+            help="After snapshotting, compose the result with the given base "
+                 "snapshot id(s). Repeat to merge several bases (e.g. GA "
+                 "singleton + extras). Only valid with a single repo file.",
+            action="append",
+            metavar="SNAPSHOT_ID",
+        )
+        cmd_snapshot.add_argument(
+            "--compose-tag",
+            help="Tag used in the compose output id (default: compose). "
+                 "Output is f<release>-<arch>-<compose-tag>-<date>.",
+            default="compose",
+            type=str,
+        )
+
+        cmd_compose = cmd.add_parser(
+            "compose",
+            add_help=True,
+            allow_abbrev=False,
+            argument_default=None,
+            description="Merge several existing snapshots into one with fresh repodata",
+            help="Compose snapshots into a single mergerepo'd snapshot",
+            prog=f"{self._parser.prog} compose",
+        )
+        cmd_compose.add_argument(
+            "--output",
+            help="Output snapshot ID (e.g. f44-x86_64-compose-20260519)",
+            required=True,
+            type=str,
+        )
+        cmd_compose.add_argument(
+            "--platform-id",
+            help="Platform ID for output blobs (e.g. f44)",
+            required=True,
+            type=str,
+        )
+        cmd_compose.add_argument(
+            "--storage",
+            help="Storage tier (default: public)",
+            default="public",
+            type=str,
+        )
+        cmd_compose.add_argument(
+            "inputs",
+            help="Input snapshot full IDs (e.g. f44-x86_64-fedora-20260430)",
+            metavar="SNAPSHOT",
+            nargs="+",
+            type=str,
+        )
 
         cmd_gc = cmd.add_parser(
             "gc",
@@ -371,6 +508,11 @@ class Cli(contextlib.AbstractContextManager):
             ret = CliEnumerateCache(self).run()
         elif self.args.cmd == "snapshot":
             ret = CliSnapshot(self).run()
+        elif self.args.cmd == "compose":
+            # Tell push to write the thread/manifest under the user-supplied
+            # output id rather than deriving it from a repo config.
+            self.args.snapshot_id = self.args.output
+            ret = CliCompose(self).run()
         elif self.args.cmd == "gc":
             # Derive platform-id from snapshot if not given
             # e.g. "f44" from "f44-x86_64-branched-20260310"

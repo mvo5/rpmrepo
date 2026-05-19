@@ -15,18 +15,16 @@
  *   /v2/enumerate[/<thread>]
  *   /compose/<release>/Fedora-<Release>-<snapshot>/compose/Everything/<arch>/os/<path...>
  *   /compose/<release>/latest-Fedora-<Release>/COMPOSE_ID
- *   /linux/updates/<release>/Everything/<arch>/<path...>
  *   /robots.txt
  *   /                -> redirect to documentation
  *
  * The /compose/... surface mimics the kojipkgs.fedoraproject.org layout so
- * that mkosi's Fedora Snapshot= setting works against this worker. The
- * /linux/updates/... surface mimics dl.fedoraproject.org so that mkosi's
- * generated `updates` repo URL (which is not snapshot-templated) resolves
- * against the same release pointer. <release> is mapped to (platform, tag,
- * updates_date) by reading a pointer file written by the snapshot job (see
- * loadReleasePointer) and translated internally into the existing
- * data/ref/<snapshot-id>/<path> R2 layout.
+ * that mkosi's Fedora Snapshot= setting works against this worker. <release>
+ * is mapped to (platform, tag) by reading a pointer file written by the
+ * snapshot/compose job (see loadReleasePointer) and translated internally
+ * into the existing data/ref/<snapshot-id>/<path> R2 layout. The pointer
+ * names the compose stream; clients can request any date that has a thread
+ * marker, not just the pointer's current `date`.
  */
 
 const DOCUMENTATION_URL = "https://osbuild.org/docs/developer-guide/projects/rpmrepo/";
@@ -37,24 +35,14 @@ const STORAGE_URLS = {
 
 const ROBOTS_TXT = "User-agent: *\nDisallow: /\n";
 
-// Pointer file produced by the snapshot job for each Fedora release.
-// Body is JSON:
-//   {"platform": "f44", "tag": "fedora", "date": "20260519",
-//    "fedora_snapshot_id": "f44-x86_64-fedora-20260430",
-//    "updates_date": "20260519"}
-// `date` is the "as-of" date returned by the latest-snapshot endpoint and
-// expected to appear in the koji-style compose URL mkosi requests. The
-// optional `fedora_snapshot_id` overrides the snapshot id used to resolve
-// that compose URL on the backend, which is needed when a GA singleton is
-// frozen at an earlier date than the rolling pointer (otherwise the worker
-// constructs the snapshot id as f<platform>-<arch>-<tag>-<date>). The
-// optional `updates_date` is the rpmrepo snapshot date for the matching
-// updates-released stream (absent for rawhide/branched, where updates has
-// no separate stream). Worker reads this to translate the koji compose URL
-// and the dl.fedoraproject.org-style updates URL into our snapshot ids, and
-// to serve the COMPOSE_ID endpoint. Keeping this out of the worker source
-// means new releases (e.g. f45 becoming rawhide, fNN graduating from
-// branched to fedora) just require a pointer write, not a worker redeploy.
+// Pointer file produced by the snapshot/compose job for each Fedora release.
+// Body is JSON: {"platform": "f44", "tag": "compose", "date": "20260519"}.
+// `tag` selects the stream (e.g. "compose" for ctl-compose merged snapshots,
+// "branched" for pre-GA composes, "rawhide" for nightly). `date` is the most
+// recent snapshot of that stream and is what the COMPOSE_ID endpoint serves
+// so mkosi `latest-snapshot` finds it. Backend snapshot ids are constructed
+// as f<platform>-<arch>-<tag>-<date_from_url>, so clients can pin to any past
+// date that still has a thread marker, not just the pointer's current `date`.
 function releasePointerKey(release) {
 	return `data/latest/fedora-${release}.json`;
 }
@@ -147,28 +135,7 @@ function parseRequest(pathname) {
 		return parseComposeRequest(elements);
 	}
 
-	// dl.fedoraproject.org compatible updates surface. mkosi pairs this
-	// with Snapshot= to fetch the updates repo for non-rawhide releases:
-	//
-	//   /linux/updates/<release>/Everything/<arch>/<path...>
-	if (elements[0] === "linux") {
-		return parseUpdatesRequest(elements);
-	}
-
 	return null;
-}
-
-function parseUpdatesRequest(elements) {
-	// elements[0] is "linux"
-	if (elements.length < 6) return null;
-	if (elements[1] !== "updates") return null;
-	const release = elements[2];
-	if (elements[3] !== "Everything") return null;
-	const arch = elements[4];
-	const path = elements.slice(5).join("/");
-	if (!path) return null;
-
-	return { updates: { release, arch, path } };
 }
 
 function parseComposeRequest(elements) {
@@ -234,39 +201,10 @@ async function handleCompose(bucket, { release, snapshot, arch, path }) {
 	const ptr = await loadReleasePointer(bucket, release);
 	if (!ptr) return errorResponse(404);
 
-	// Reject if the URL's snapshot value doesn't match the pointer's "as-of"
-	// date. This keeps the koji compose URL surface deterministic instead of
-	// silently serving the pointer's content for any date the caller invents.
-	if (snapshot !== ptr.date) return errorResponse(404);
-
-	// fedora_snapshot_id overrides the constructed id when a GA singleton is
-	// frozen at an earlier date than the rolling pointer. Otherwise we build
-	// the id from platform+arch+tag+date as before.
-	const snapshotId = ptr.fedora_snapshot_id
-		|| `${ptr.platform}-${arch}-${ptr.tag}-${snapshot}`;
-
 	return handleMirror(bucket, {
 		storage: "public",
 		platform: ptr.platform,
-		snapshot: snapshotId,
-		path,
-	});
-}
-
-/**
- * Handle a dl.fedoraproject.org-style updates mirror request.
- *
- * Reads the release pointer to find the rpmrepo updates-released snapshot
- * date for this release, then defers to handleMirror() for the actual lookup.
- */
-async function handleUpdates(bucket, { release, arch, path }) {
-	const ptr = await loadReleasePointer(bucket, release);
-	if (!ptr || !ptr.updates_date) return errorResponse(404);
-
-	return handleMirror(bucket, {
-		storage: "public",
-		platform: ptr.platform,
-		snapshot: `${ptr.platform}-${arch}-updates-released-${ptr.updates_date}`,
+		snapshot: `${ptr.platform}-${arch}-${ptr.tag}-${snapshot}`,
 		path,
 	});
 }
@@ -350,7 +288,6 @@ export default {
 		if (cmd.enumerate) return handleEnumerate(env.BUCKET, cmd.enumerate);
 		if (cmd.compose) return handleCompose(env.BUCKET, cmd.compose);
 		if (cmd.composeLatest) return handleComposeLatest(env.BUCKET, cmd.composeLatest);
-		if (cmd.updates) return handleUpdates(env.BUCKET, cmd.updates);
 
 		return errorResponse(400);
 	},
